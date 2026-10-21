@@ -1,0 +1,15 @@
+# Local user data and repair outputs must never be published.
+.quarantine/
+.repairs/
+.service-pid
+work/
+node_modules/
+*.log
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+Thumbs.db
+Desktop.ini
+.DS_Store
