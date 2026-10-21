@@ -95,6 +95,7 @@ try {
     window.fetch=async (url, options)=>{
       if(url==='/api/repair/start') { window.repairRequests.push(JSON.parse(options.body)); window.fixtureJob={id:'synthetic-job',createdAt:new Date().toISOString(),status:'running',message:'测试：执行中',steps:[{id:'dns',title:'清掉旧的网址解析缓存',status:'running',message:'测试：处理中'}]}; return new Response(JSON.stringify({job:window.fixtureJob}),{status:202}); }
       if(url==='/api/repair/job') return new Response(JSON.stringify({job:window.fixtureJob}));
+      if(url==='/api/repair/history') return new Response(JSON.stringify({jobs:window.fixtureHistory || []}));
       if(url==='/api/repair/log') return new Response(JSON.stringify({text:'测试输出：旧网址缓存已清除',truncated:false}));
       return window.originalFetch(url,options);
     };
@@ -110,6 +111,22 @@ try {
   await evaluate("document.querySelector('.repair-log-btn').click()");
   await until("!document.querySelector('#repairLogPanel').hidden");
   assert.match(await evaluate("document.querySelector('#repairLogText').textContent"), /旧网址缓存/);
+  await evaluate(`(async()=>{
+    window.fixtureJob.steps[0].nextAction={type:'cleanup',label:'去清理系统盘',detail:'系统盘空间不足，请先释放至少 5 GB'};
+    window.fixtureHistory=[{id:'older-record',createdAt:'2026-10-20T00:00:00Z',status:'review',message:'旧版记录未进行复检',steps:[{id:'sfc',title:'系统文件',status:'succeeded',message:'Windows 未发现受保护系统文件损坏'}]}];
+    await pollRepairJob();
+  })()`);
+  assert.match(await evaluate("document.querySelector('#repairJob').textContent"), /空间不足/);
+  await evaluate("document.querySelector('.repair-next-btn').click()");
+  assert.equal(await evaluate("document.querySelector('.nav-item.active').dataset.view"), 'scan');
+  await evaluate("setView('repair'); document.querySelector('#repairHistory').value='older-record'; document.querySelector('#repairHistory').dispatchEvent(new Event('change'))");
+  assert.match(await evaluate("document.querySelector('#repairJob').textContent"), /旧版记录未进行复检/);
+  assert.match(await evaluate("document.querySelector('#repairJob').textContent"), /未发现受保护系统文件损坏/);
+  await evaluate("document.querySelector('#repairHistory').value=''; document.querySelector('#repairHistory').dispatchEvent(new Event('change'))");
+  await evaluate("document.querySelector('.repair-report').scrollIntoView({block:'start'})");
+  await delay(350);
+  const resultsScreen = await cdp('Page.captureScreenshot', { format: 'png' });
+  await fs.writeFile(path.join(root, 'work/jingjie-repair-results-verified.png'), Buffer.from(resultsScreen.data, 'base64'));
   await evaluate("window.fetch=window.originalFetch; repairJob=null; document.querySelector('#repairJob').textContent='还没有修复记录。执行后会显示每一步做了什么、是否完成。'; document.querySelector('#repairLogPanel').hidden=true; updateRepairControls()");
   const repairScreen = await cdp('Page.captureScreenshot', { format: 'png' });
   await fs.writeFile(path.join(root, 'work/jingjie-repair-verified.png'), Buffer.from(repairScreen.data, 'base64'));

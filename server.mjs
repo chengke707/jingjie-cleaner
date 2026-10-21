@@ -350,13 +350,14 @@ async function handleApi(req, res, pathname) {
   if (req.method === 'GET' && pathname === '/api/system') {
     let disk = { total: 0, free: 0, usedPercent: 0 };
     try { const stats = fs.statfsSync(process.env.SystemDrive || 'C:\\'); disk = { total: stats.blocks * stats.bsize, free: stats.bavail * stats.bsize, usedPercent: Math.round((1 - stats.bavail / stats.blocks) * 100) }; } catch {}
-    const quarantined = (await readManifest()).map(({ files, ...item }) => item); return json(res, 200, { app: 'jingjie-cleaner', version: '0.3.0', disk, hostname: os.hostname(), quarantine: quarantined });
+    const quarantined = (await readManifest()).map(({ files, ...item }) => item); return json(res, 200, { app: 'jingjie-cleaner', version: '0.3.1', disk, hostname: os.hostname(), quarantine: quarantined });
   }
   if (req.method === 'GET' && pathname === '/api/apps') return json(res, 200, { apps: await installedApps() });
   if (req.method === 'GET' && pathname === '/api/history') return json(res, 200, { history: await readHistory() });
   if (req.method === 'POST' && pathname === '/api/leftovers') return json(res, 200, { leftovers: await scanLeftovers() });
   if (req.method === 'POST' && pathname === '/api/repair/check') { const data = await body(req); return json(res, 200, await repairCheck(data.id)); }
   if (req.method === 'GET' && pathname === '/api/repair/job') return json(res, 200, { job: await repairJobs.get() });
+  if (req.method === 'GET' && pathname === '/api/repair/history') return json(res, 200, { jobs: await repairJobs.history() });
   if (req.method === 'POST' && pathname === '/api/repair/start') {
     const data = await body(req);
     if (data.confirm !== true) return json(res, 400, { error: '请勾选项目并点击开始修复' });

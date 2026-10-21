@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 if (process.platform !== 'win32') throw new Error('These integration tests require Windows.');
 await fs.mkdir('work', { recursive: true });
-for (const file of ['verify-cleaner.mjs', 'verify-new-features.mjs', 'verify-repair-jobs.mjs', 'verify-repair-worker.ps1']) {
+for (const file of ['verify-cleaner.mjs', 'verify-new-features.mjs', 'verify-repair-results.mjs', 'verify-repair-jobs.mjs', 'verify-repair-worker.ps1']) {
   const isPowerShell = file.endsWith('.ps1');
   const command = isPowerShell ? 'powershell.exe' : process.execPath;
   const args = isPowerShell ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', `tests/${file}`] : [`tests/${file}`];

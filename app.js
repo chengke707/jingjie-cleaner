@@ -338,13 +338,14 @@ $('#leftoverQuarantineBtn').addEventListener('click', async () => {
 
 const repairs = [
   { id: 'network', icon: 'network', title: '部分网页打不开：刷新网址缓存', action: 'flush-dns', desc: '会做什么：清掉电脑保存的旧网址解析记录，让下次访问重新查询。', impact: '适合：网络已连接，但部分网址打不开。不会删除浏览记录、修改 Wi-Fi 密码、DNS 服务器或代理设置；不能解决所有断网问题。通常几秒完成。' },
-  { id: 'components', icon: 'monitor-cog', title: '系统报错或功能异常：修复系统文件', action: 'repair-components', desc: '会做什么：先用 Windows 自带工具修复组件库，再检查并修复受保护的系统文件（DISM → SFC）。', impact: '适合：Windows 功能异常或提示系统文件损坏。会修改受损的系统文件，可能联网下载官方修复文件；请保持联网和供电，可能需要几十分钟。不会重装你的第三方应用。' },
+  { id: 'components', icon: 'monitor-cog', title: '系统报错或功能异常：修复系统文件', action: 'repair-components', desc: '会做什么：修复组件库 → 深度复检组件库 → 修复系统文件 → 再复检系统文件。两项复检均通过才显示确认通过。', impact: '适合：Windows 功能异常或提示系统文件损坏。会修改受损的系统文件，可能联网下载官方修复文件；请保持联网和供电，修复及复检可能需要较长时间。系统盘至少需留 5 GB，建议 10 GB；不会重装你的第三方应用。' },
   { id: 'update', icon: 'download', title: 'Windows 更新状态', desc: '检查更新服务是否被禁用、是否等待重启。', impact: '打开设置后，由你在 Windows 中选择更新。这不属于本次自动修复，也不会记作修复成功。', helper: 'open-update', helperLabel: '打开更新设置' },
-  { id: 'disk', icon: 'hard-drive', title: '系统盘空间', desc: '查看 C 盘还剩多少空间。', impact: '打开设置不会删除文件或释放空间。需要清理时，可使用左侧“智能清理”，先看清文件再选择。', helper: 'open-storage', helperLabel: '打开存储设置' }
+  { id: 'disk', icon: 'hard-drive', title: '系统盘空间', desc: '查看 C 盘还剩多少空间。', impact: '打开设置不会删除文件或释放空间。需要清理时，可使用左侧“深度扫描”，先看清文件再选择。', helper: 'open-storage', helperLabel: '打开存储设置' }
 ];
 const repairSelection = new Set();
 const repairChecks = new Set();
 let checkingAll = false, repairSubmitting = false, repairJob = null, repairPollTimer, repairPollFailed = false;
+let repairHistory = [], repairHistorySelection = '';
 const repairIsActive = () => repairSubmitting || ['starting', 'running'].includes(repairJob?.status);
 function updateRepairControls() {
   const busy = repairIsActive();
@@ -380,19 +381,42 @@ async function checkRepair(id) {
 }
 $('#checkAllBtn').addEventListener('click', async () => { checkingAll = true; updateRepairControls(); try { for (const item of repairs) await checkRepair(item.id); } finally { checkingAll = false; updateRepairControls(); } });
 function renderRepairJob() {
-  if (!repairJob) return;
-  const labels = { pending: '等待', starting: '等待授权', running: '执行中', succeeded: '已完成', completed: '已完成', review: '请查看结果', failed: '未成功', cancelled: '已取消', interrupted: '结果未确认', skipped: '未执行' };
-  $('#repairJob').innerHTML = `<p class="repair-job-heading">${escapeHtml(new Date(repairJob.createdAt).toLocaleString('zh-CN'))} · ${labels[repairJob.status] || '未知状态'}</p><p>${escapeHtml(repairJob.message)}</p>${repairJob.steps.map(step => `<div class="repair-step"><div><strong>${escapeHtml(step.title)} · ${labels[step.status] || '未知状态'}</strong><p>${escapeHtml(step.message || '')}${step.exitCode !== undefined ? `（返回代码 ${step.exitCode}）` : ''}</p></div><button class="secondary-btn repair-log-btn" data-step="${step.id}">查看输出</button></div>`).join('')}`;
+  const job = repairHistorySelection ? repairHistory.find(item => item.id === repairHistorySelection) : repairJob;
+  if (!job) { $('#repairJob').textContent = '还没有修复记录。执行后会显示每一步做了什么、是否完成。'; return; }
+  const labels = { pending: '等待', starting: '等待授权', running: '执行中', succeeded: '此步已完成', completed: '执行及检查完成', review: '未确认通过', failed: '未成功', cancelled: '已取消', blocked: '未启动', interrupted: '结果未确认', skipped: '未执行' };
+  $('#repairJob').innerHTML = `<p class="repair-job-heading">${escapeHtml(new Date(job.createdAt).toLocaleString('zh-CN'))} · ${labels[job.status] || '未知状态'}${job.verified ? ' · 两项系统复检均通过' : ''}</p><p>${escapeHtml(job.message)}</p>${job.steps.map(step => `<div class="repair-step" data-status="${escapeHtml(step.status)}"><div><strong>${escapeHtml(step.title)} · ${labels[step.status] || '未知状态'}</strong><p>${escapeHtml(step.message || '')}${step.exitCode !== undefined ? `（返回代码 ${step.exitCode}）` : ''}</p>${step.nextAction ? `<div class="repair-next"><p>${escapeHtml(step.nextAction.detail)}</p>${step.nextAction.type === 'reboot' ? '' : `<button class="secondary-btn repair-next-btn" data-step="${escapeHtml(step.id)}">${escapeHtml(step.nextAction.label)}</button>`}</div>` : ''}</div><button class="secondary-btn repair-log-btn" data-step="${escapeHtml(step.id)}">查看输出</button></div>`).join('')}`;
   $$('.repair-log-btn').forEach(button => button.addEventListener('click', async () => {
-    try { const data = await api('/api/repair/log', { method: 'POST', body: JSON.stringify({ id: repairJob.id, step: button.dataset.step }) }); $('#repairLogTitle').textContent = `${repairJob.steps.find(step => step.id === button.dataset.step).title} · Windows 输出${data.truncated ? '（最近 128 KB）' : ''}`; $('#repairLogText').textContent = data.text; $('#repairLogPanel').hidden = false; $('#repairLogPanel').open = true; }
+    try { const data = await api('/api/repair/log', { method: 'POST', body: JSON.stringify({ id: job.id, step: button.dataset.step }) }); $('#repairLogTitle').textContent = `${job.steps.find(step => step.id === button.dataset.step).title} · Windows 输出${data.truncated ? '（最近 128 KB）' : ''}`; $('#repairLogText').textContent = data.text; $('#repairLogPanel').hidden = false; $('#repairLogPanel').open = true; }
     catch (error) { toast(`记录读取失败：${error.message}`); }
   }));
+  $$('.repair-next-btn').forEach(button => button.addEventListener('click', async () => {
+    const step = job.steps.find(item => item.id === button.dataset.step);
+    if (step.nextAction.type === 'cleanup') return setView('scan');
+    if (step.nextAction.type === 'update') {
+      try { await api('/api/repair/action', { method: 'POST', body: JSON.stringify({ action: 'open-update', confirm: true }) }); toast('已打开 Windows 更新，请在设置中继续操作'); }
+      catch (error) { toast(error.message); }
+      return;
+    }
+    if (repairIsActive()) return toast('请等待当前修复结束');
+    repairSelection.clear(); repairSelection.add(step.id === 'dns' ? 'flush-dns' : 'repair-components'); renderRepairs();
+    $('#startRepairBtn').scrollIntoView({ block: 'center' }); toast('已选好项目，请确认原因已解决后点击“开始修复”');
+  }));
 }
+async function loadRepairHistory() {
+  try {
+    const data = await api('/api/repair/history'); repairHistory = data.jobs || [];
+    $('#repairHistory').innerHTML = '<option value="">最近一次修复</option>' + repairHistory.filter(job => job.id !== repairJob?.id).map(job => `<option value="${escapeHtml(job.id)}">${escapeHtml(new Date(job.createdAt).toLocaleString('zh-CN'))}</option>`).join('');
+    if (!repairHistory.some(job => job.id === repairHistorySelection) || repairHistorySelection === repairJob?.id) repairHistorySelection = '';
+    $('#repairHistory').value = repairHistorySelection; $('#repairHistoryError').hidden = true;
+  } catch { $('#repairHistoryError').textContent = '历史记录暂时读取失败，稍后会重试。'; $('#repairHistoryError').hidden = false; }
+}
+$('#repairHistory').addEventListener('change', () => { repairHistorySelection = $('#repairHistory').value; $('#repairLogPanel').hidden = true; renderRepairJob(); });
 async function pollRepairJob() {
   clearTimeout(repairPollTimer);
   try {
     const data = await api('/api/repair/job');
-    if (repairPollFailed || JSON.stringify(data.job) !== JSON.stringify(repairJob)) { repairJob = data.job; renderRepairJob(); }
+    if (repairPollFailed || JSON.stringify(data.job) !== JSON.stringify(repairJob)) { repairJob = data.job; await loadRepairHistory(); renderRepairJob(); }
+    else if (!$('#repairHistoryError').hidden) await loadRepairHistory();
     repairPollFailed = false;
     updateRepairControls();
   } catch (error) { repairPollFailed = true; if (repairIsActive()) $('#repairJob').textContent = '暂时无法获取进度，修复可能仍在执行。正在重新连接，请勿重复启动。'; }
@@ -401,10 +425,11 @@ async function pollRepairJob() {
 $('#startRepairBtn').addEventListener('click', async () => {
   if (!state.live || repairIsActive() || !repairSelection.size) return;
   repairSubmitting = true; updateRepairControls();
+  $('#repairStartError').hidden = true;
   try {
     const data = await api('/api/repair/start', { method: 'POST', body: JSON.stringify({ actions: [...repairSelection], confirm: true }) });
-    repairJob = data.job; $('#repairLogPanel').hidden = true; renderRepairJob();
-  } catch (error) { toast(`启动未确认：${error.message}。正在读取最新状态。`); }
+    repairHistorySelection = ''; repairJob = data.job; await loadRepairHistory(); $('#repairLogPanel').hidden = true; renderRepairJob();
+  } catch (error) { $('#repairStartError').textContent = `启动未确认：${error.message}。请查看下方最新状态，避免重复启动。`; $('#repairStartError').hidden = false; }
   finally { await pollRepairJob(); repairSubmitting = false; updateRepairControls(); }
 });
 

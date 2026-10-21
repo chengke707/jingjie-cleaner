@@ -151,7 +151,8 @@
         <div class="notice-line"><i data-icon="shield-check"></i><span>点击“开始修复”即同意执行所选项目，应用不再逐项询问。Windows 可能弹出一次管理员授权。请先保存工作；不会自动重启，也不会安装第三方补丁。</span></div>
         <div class="repair-list" id="repairList"></div>
         <div class="repair-startbar"><div><strong id="repairSelection">请选择要修复的项目</strong><p>仅执行勾选的操作；未检查的项目不代表已发现故障。</p></div><button class="primary-btn" id="startRepairBtn" disabled>开始修复</button></div>
-        <section class="panel repair-report" aria-live="polite"><h3>最近一次修复</h3><div id="repairJob">还没有修复记录。执行后会显示每一步做了什么、是否完成。</div><details id="repairLogPanel" hidden><summary id="repairLogTitle">Windows 执行输出</summary><pre id="repairLogText"></pre></details></section>
+        <p id="repairStartError" class="repair-start-error" role="alert" hidden></p>
+        <section class="panel repair-report" aria-live="polite"><h3>修复结果与记录</h3><label class="repair-history-label">查看记录 <select id="repairHistory"><option value="">最近一次修复</option></select></label><p id="repairHistoryError" hidden></p><div id="repairJob">还没有修复记录。执行后会显示每一步做了什么、是否完成。</div><details id="repairLogPanel" hidden><summary id="repairLogTitle">Windows 执行输出</summary><pre id="repairLogText"></pre></details></section>
       </section>
 
       <section id="quarantineView" class="view">
