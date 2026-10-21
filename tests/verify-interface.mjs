@@ -89,6 +89,17 @@ try {
   assert.equal(await evaluate("document.querySelector('[data-repair-status=disk] strong').textContent.length > 0"), true);
   assert.equal(await evaluate("document.querySelector('#startRepairBtn').disabled"), true);
   assert.equal(await evaluate("document.querySelectorAll('[data-repair-select]').length"), 2);
+  // Exercise check authorization feedback and raw-output escaping without a real UAC prompt.
+  await evaluate(`window.checkFetch=window.fetch; window.fetch=(url, options)=>url==='/api/repair/check' ? new Promise(resolve=>{window.resolveCheck=resolve;}) : window.checkFetch(url,options);
+    document.querySelector('.repair-check-btn[data-id=components]').click();`);
+  assert.match(await evaluate("document.querySelector('[data-repair-status=components]').textContent"), /管理员授权/);
+  assert.equal(await evaluate("document.querySelector('.repair-check-btn[data-id=components]').disabled"), true);
+  await evaluate(`window.resolveCheck(new Response(JSON.stringify({status:'error',summary:'组件库检查未完成',detail:'测试：代码 112，磁盘空间不足',output:'Error: 112 <script>bad()</script> '+ 'x'.repeat(600)})));`);
+  await until("!document.querySelector('.repair-check-btn[data-id=components]').disabled");
+  await evaluate("document.querySelector('[data-repair-status=components] details').open=true");
+  assert.match(await evaluate("document.querySelector('[data-repair-status=components] pre').textContent"), /<script>bad/);
+  assert.equal(await evaluate("document.querySelector('[data-repair-status=components] script')===null"), true);
+  await evaluate("window.fetch=window.checkFetch");
   // Intercept repair execution in the browser. Never run real repair commands during UI testing.
   await evaluate(`window.repairRequests=[]; window.confirmCalls=0; window.confirm=()=>{window.confirmCalls++; return false;};
     window.originalFetch=window.fetch; window.fixtureJob=null;
@@ -144,6 +155,7 @@ try {
   const repairWidths = await evaluate("({scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth})");
   assert.ok(repairWidths.scroll <= repairWidths.client, JSON.stringify(repairWidths));
   assert.equal(await evaluate("getComputedStyle(document.querySelector('[data-repair-status=disk]')).display !== 'none'"), true);
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('[data-repair-status=components] details')).display !== 'none'"), true);
   console.log('PASS browser: cleaning/history, leftovers, real disk check; repair selection, single click/no confirmation, duplicate prevention, failure/log UI, mobile layout and no JS errors.');
   console.log('Real user files were not modified.');
 } finally {

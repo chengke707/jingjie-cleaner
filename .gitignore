@@ -1,6 +1,7 @@
 # Local user data and repair outputs must never be published.
 .quarantine/
 .repairs/
+.checks/
 .service-pid
 work/
 node_modules/

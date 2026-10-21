@@ -8,11 +8,13 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { createRepairJobs } from './repair-jobs.mjs';
+import { createComponentCheck } from './component-check.mjs';
 
 const execFileAsync = promisify(execFile);
 const appDir = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.JINGJIE_DATA_DIR ? path.resolve(process.env.JINGJIE_DATA_DIR) : appDir;
 const repairJobs = createRepairJobs({ dataDir, appDir });
+const checkComponents = createComponentCheck({ dataDir, appDir });
 const quarantineDir = path.join(dataDir, '.quarantine');
 const manifestPath = path.join(quarantineDir, 'manifest.json');
 const historyPath = path.join(quarantineDir, 'history.json');
@@ -316,8 +318,8 @@ async function repairCheck(id) {
     catch (error) { return { status: 'error', summary: '检查失败', detail: error.message }; }
   }
   if (id === 'components') {
-    try { const { stdout } = await execFileAsync('DISM.exe', ['/Online', '/Cleanup-Image', '/CheckHealth', '/English'], { windowsHide: true, encoding: 'utf8', timeout: 90000, maxBuffer: 8 * 1024 * 1024 }); const healthy = /No component store corruption detected/i.test(stdout); return { status: healthy ? 'good' : 'warning', summary: healthy ? '快速检查未发现组件库损坏记录' : /non-repairable/i.test(stdout) ? 'Windows 报告组件库无法常规修复' : /repairable/i.test(stdout) ? 'Windows 报告组件库需要修复' : '未能判断组件库是否损坏', detail: '快速检查不等于全面检查。遇到系统报错时，可勾选下方系统文件修复。' }; }
-    catch (error) { return { status: 'warning', summary: '需要管理员权限或检查未完成', detail: '可启动 Windows 官方 DISM 与 SFC', action: 'repair-components', actionLabel: '管理员检查修复' }; }
+    if (['starting', 'running'].includes((await repairJobs.get())?.status)) return { status: 'warning', summary: '请等待当前修复结束', detail: '系统修复执行期间不重复启动组件库检查。' };
+    return checkComponents();
   }
   if (id === 'network') {
     const script = String.raw`[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $proxy=(netsh winhttp show proxy | Out-String); $dns=@(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object ServerAddresses | ForEach-Object ServerAddresses | Select-Object -Unique); [pscustomobject]@{Proxy=$proxy;Dns=$dns} | ConvertTo-Json -Compress -Depth 3`;
@@ -350,7 +352,7 @@ async function handleApi(req, res, pathname) {
   if (req.method === 'GET' && pathname === '/api/system') {
     let disk = { total: 0, free: 0, usedPercent: 0 };
     try { const stats = fs.statfsSync(process.env.SystemDrive || 'C:\\'); disk = { total: stats.blocks * stats.bsize, free: stats.bavail * stats.bsize, usedPercent: Math.round((1 - stats.bavail / stats.blocks) * 100) }; } catch {}
-    const quarantined = (await readManifest()).map(({ files, ...item }) => item); return json(res, 200, { app: 'jingjie-cleaner', version: '0.3.1', disk, hostname: os.hostname(), quarantine: quarantined });
+    const quarantined = (await readManifest()).map(({ files, ...item }) => item); return json(res, 200, { app: 'jingjie-cleaner', version: '0.3.2', disk, hostname: os.hostname(), quarantine: quarantined });
   }
   if (req.method === 'GET' && pathname === '/api/apps') return json(res, 200, { apps: await installedApps() });
   if (req.method === 'GET' && pathname === '/api/history') return json(res, 200, { history: await readHistory() });

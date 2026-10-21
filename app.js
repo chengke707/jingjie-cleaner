@@ -359,7 +359,7 @@ function updateRepairControls() {
 function renderRepairs() {
   $('#repairList').innerHTML = repairs.map(item => {
     const result = state.repairResults[item.id];
-    return `<div class="repair-item"><span class="repair-icon">${svg(item.icon)}</span><div class="repair-copy"><h3>${item.title}</h3><p>${item.desc}</p><p class="repair-impact">${item.impact}</p><div class="repair-status ${result?.status || ''}" data-repair-status="${item.id}"><strong>${escapeHtml(result?.summary || '尚未检查：尚不能判断是否有故障')}</strong>${result?.detail ? `<small>${escapeHtml(result.detail)}</small>` : ''}</div></div><div class="repair-actions">${item.action ? `<label class="repair-choice"><input type="checkbox" data-repair-select="${item.action}" ${repairSelection.has(item.action) ? 'checked' : ''}>修复这一项</label>` : `<button class="secondary-btn repair-helper-btn" data-action="${item.helper}">${item.helperLabel}</button>`}<button class="secondary-btn repair-check-btn" data-id="${item.id}">检查</button></div></div>`;
+    return `<div class="repair-item"><span class="repair-icon">${svg(item.icon)}</span><div class="repair-copy"><h3>${item.title}</h3><p>${item.desc}</p><p class="repair-impact">${item.impact}</p><div class="repair-status ${result?.status || ''}" data-repair-status="${item.id}"><strong>${escapeHtml(result?.summary || '尚未检查：尚不能判断是否有故障')}</strong>${result?.detail ? `<small>${escapeHtml(result.detail)}</small>` : ''}${result?.output ? `<details><summary>Windows 检查输出</summary><pre class="repair-log">${escapeHtml(result.output)}</pre></details>` : ''}</div></div><div class="repair-actions">${item.action ? `<label class="repair-choice"><input type="checkbox" data-repair-select="${item.action}" ${repairSelection.has(item.action) ? 'checked' : ''}>修复这一项</label>` : `<button class="secondary-btn repair-helper-btn" data-action="${item.helper}">${item.helperLabel}</button>`}<button class="secondary-btn repair-check-btn" data-id="${item.id}">检查</button></div></div>`;
   }).join('');
   bindRepairButtons(); updateRepairControls();
 }
@@ -375,6 +375,10 @@ function bindRepairButtons() {
 async function checkRepair(id) {
   if (repairIsActive() || repairChecks.has(id)) return;
   repairChecks.add(id); updateRepairControls();
+  if (id === 'components') {
+    state.repairResults[id] = { status: 'warning', summary: '正在检查组件库…', detail: '若弹出 Windows 管理员授权，请选择“是”。这里只检查已有损坏记录，不会执行修复。' };
+    renderRepairs();
+  }
   try { state.repairResults[id] = await api('/api/repair/check', { method: 'POST', body: JSON.stringify({ id }) }); }
   catch (error) { state.repairResults[id] = { status: 'error', summary: '检查失败', detail: error.message }; }
   finally { repairChecks.delete(id); renderRepairs(); }
