@@ -5,6 +5,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $result = @{ status='failed'; summary='迁移失败'; detail=''; output='' }
+$started = @{ status='running'; package=$PackageFullName; target=$TargetVolumeName; startedAt=(Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress
+[IO.File]::WriteAllText((Join-Path $ResultDirectory 'started.json'), $started, [System.Text.UTF8Encoding]::new($false))
 try {
     $target = Get-AppxVolume | Where-Object { $_.Name -eq $TargetVolumeName -and -not $_.IsOffline -and -not $_.IsSystemVolume } | Select-Object -First 1
     if (-not $target -or $target.PackageStorePath -notmatch '^[A-Za-z]:\\WindowsApps\\?$') { throw '目标盘未登记为可用的 Windows 应用迁移盘。' }

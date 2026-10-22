@@ -364,7 +364,7 @@ async function handleApi(req, res, pathname) {
   if (req.method === 'GET' && pathname === '/api/system') {
     let disk = { total: 0, free: 0, usedPercent: 0 };
     try { const stats = fs.statfsSync(process.env.SystemDrive || 'C:\\'); disk = { total: stats.blocks * stats.bsize, free: stats.bavail * stats.bsize, usedPercent: Math.round((1 - stats.bavail / stats.blocks) * 100) }; } catch {}
-    const quarantined = (await readManifest()).map(({ files, ...item }) => item); return json(res, 200, { app: 'jingjie-cleaner', version: '0.3.3', disk, hostname: os.hostname(), quarantine: quarantined });
+    const quarantined = (await readManifest()).map(({ files, ...item }) => item); return json(res, 200, { app: 'jingjie-cleaner', version: '0.3.4', disk, hostname: os.hostname(), quarantine: quarantined });
   }
   if (req.method === 'GET' && pathname === '/api/apps') return json(res, 200, await installedApps());
   if (req.method === 'POST' && pathname === '/api/apps/scan') return json(res, 200, await installedApps(true));

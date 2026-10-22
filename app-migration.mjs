@@ -53,7 +53,8 @@ async function runElevatedMove({ appDir, dataDir, packageFullName, targetVolumeN
   const worker = `& ${psQuote(path.join(appDir, 'move-appx.ps1'))} -ResultDirectory ${psQuote(directory)} -PackageFullName ${psQuote(packageFullName)} -TargetVolumeName ${psQuote(targetVolumeName)}`;
   const encoded = Buffer.from(worker, 'utf16le').toString('base64');
   const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const command = `$ErrorActionPreference='Stop'; try { $p=Start-Process -FilePath '${powershell.replace(/'/g, "''")}' -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}' -Wait -PassThru; exit $p.ExitCode } catch { if ($_.Exception.NativeErrorCode -eq 1223 -or $_.Exception.InnerException.NativeErrorCode -eq 1223) { exit 1223 }; Write-Output $_.Exception.Message; exit 1 }`;
+  const launcherFile = path.join(directory, 'launcher.json');
+  const command = `$ErrorActionPreference='Stop'; $record=[ordered]@{status='starting';exitCode=$null;error=''}; try { $p=Start-Process -FilePath '${powershell.replace(/'/g, "''")}' -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}' -Wait -PassThru; $record.status='exited'; $record.exitCode=$p.ExitCode } catch { $record.status='launch-failed'; $record.error=$_.Exception.Message; if ($_.Exception.NativeErrorCode -eq 1223 -or $_.Exception.InnerException.NativeErrorCode -eq 1223) { $record.exitCode=1223 } else { $record.exitCode=1 }; Write-Output $record.error } finally { try { [IO.File]::WriteAllText('${launcherFile.replace(/'/g, "''")}',($record | ConvertTo-Json -Compress),[System.Text.UTF8Encoding]::new($false)) } catch { Write-Output $_.Exception.Message } }; exit $record.exitCode`;
   let exitCode = 0, launcherOutput = '';
   try {
     const result = await execute(powershell, ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true, encoding: 'utf8', timeout: 600000, maxBuffer: 1024 * 1024 });
@@ -67,9 +68,15 @@ async function runElevatedMove({ appDir, dataDir, packageFullName, targetVolumeN
     const result = JSON.parse((await fs.readFile(path.join(directory, 'result.json'), 'utf8')).replace(/^\uFEFF/, ''));
     return { ...result, output: result.output || launcherOutput };
   } catch {
-    return exitCode === 1223
-      ? { status: 'cancelled', summary: '已取消管理员授权', detail: '应用没有迁移；可以再次选择目标盘并重试。' }
-      : { status: 'failed', summary: '没有收到 Windows 迁移结果', detail: launcherOutput || '没有完整结果；请检查 Windows 设置中的应用位置后再操作。' };
+    let launcher;
+    try { launcher = JSON.parse(await fs.readFile(launcherFile, 'utf8')); } catch {}
+    let started;
+    try { started = JSON.parse(await fs.readFile(path.join(directory, 'started.json'), 'utf8')); } catch {}
+    const actualExitCode = launcher?.exitCode ?? exitCode;
+    if (actualExitCode === 1223) return { status: 'cancelled', summary: '已取消管理员授权', detail: '应用没有迁移；可以再次选择目标盘并重试。', output: launcher?.error || launcherOutput };
+    const reason = launcher?.error || launcherOutput || (started ? 'Windows 已启动迁移操作，但工作程序未保存最终结果。' : 'Windows 管理员工作程序没有写入启动记录。');
+    const code = `进程退出代码：${actualExitCode ?? '未返回'}。`;
+    return { status: 'failed', summary: 'Windows 未返回迁移结果', detail: `${reason} ${code}没有确认应用已移动，不能视为成功。请查看 Windows 输出并重新扫描确认位置，再决定下一步。`, output: [reason, code].join('\n') };
   }
 }
 
@@ -87,7 +94,8 @@ export function createAppMover({ appDir, dataDir, inventory, targets, move = run
       const volume = volumes.find(item => item.Name === targetVolumeName && !item.IsOffline && !item.IsSystemVolume && /^[A-Za-z]:\\WindowsApps\\?$/i.test(item.PackageStorePath || '') && item.PackageStorePath.slice(0, 2).toUpperCase() !== systemDrive);
       if (!volume) throw new Error('目标盘不是 Windows 已登记的应用迁移盘。请重新扫描并选择列表中的目标盘。');
       const result = await move({ appDir, dataDir, packageFullName: app.PackageFullName, targetVolumeName: volume.Name });
-      return { ...result, appName: app.DisplayName || app.Name, targetDrive: volume.PackageStorePath.slice(0, 1).toUpperCase() };
+      const current = (await inventory()).find(item => item.Kind === 'store' && item.PackageFullName === app.PackageFullName);
+      return { ...result, currentLocation: current?.InstallLocation || '', appName: app.DisplayName || app.Name, targetDrive: volume.PackageStorePath.slice(0, 1).toUpperCase() };
     } finally { moving = false; }
   };
 }
