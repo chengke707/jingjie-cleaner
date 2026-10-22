@@ -23,6 +23,7 @@ const moveApp = createAppMover({ appDir, dataDir, inventory: async () => (await 
 const quarantineDir = path.join(dataDir, '.quarantine');
 const manifestPath = path.join(quarantineDir, 'manifest.json');
 const historyPath = path.join(quarantineDir, 'history.json');
+const appMigrationHistoryPath = path.join(dataDir, '.migrations', 'history.json');
 const port = Number(process.env.JINGJIE_PORT || 4173);
 const host = '127.0.0.1';
 const scanSessions = new Map();
@@ -56,6 +57,15 @@ async function writeManifest(items) {
   await fsp.rename(temporary, manifestPath);
 }
 async function readHistory() { try { return JSON.parse(await fsp.readFile(historyPath, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return []; throw error; } }
+async function readAppMigrationHistory() { try { return JSON.parse(await fsp.readFile(appMigrationHistoryPath, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return []; throw error; } }
+async function recordAppMigration(result, packageFullName) {
+  const entries = await readAppMigrationHistory();
+  entries.unshift({ ...result, key: packageFullName, recordedAt: new Date().toISOString() });
+  await fsp.mkdir(path.dirname(appMigrationHistoryPath), { recursive: true });
+  const temporary = `${appMigrationHistoryPath}.tmp`;
+  await fsp.writeFile(temporary, JSON.stringify(entries.slice(0, 100), null, 2), 'utf8');
+  await fsp.rename(temporary, appMigrationHistoryPath);
+}
 async function appendHistory(event) {
   const history = await readHistory();
   const files = event.files || [];
@@ -364,13 +374,19 @@ async function handleApi(req, res, pathname) {
   if (req.method === 'GET' && pathname === '/api/system') {
     let disk = { total: 0, free: 0, usedPercent: 0 };
     try { const stats = fs.statfsSync(process.env.SystemDrive || 'C:\\'); disk = { total: stats.blocks * stats.bsize, free: stats.bavail * stats.bsize, usedPercent: Math.round((1 - stats.bavail / stats.blocks) * 100) }; } catch {}
-    const quarantined = (await readManifest()).map(({ files, ...item }) => item); return json(res, 200, { app: 'jingjie-cleaner', version: '0.3.4', disk, hostname: os.hostname(), quarantine: quarantined });
+    const quarantined = (await readManifest()).map(({ files, ...item }) => item); return json(res, 200, { app: 'jingjie-cleaner', version: '0.3.5', disk, hostname: os.hostname(), quarantine: quarantined });
   }
   if (req.method === 'GET' && pathname === '/api/apps') return json(res, 200, await installedApps());
+  if (req.method === 'GET' && pathname === '/api/apps/migrations') return json(res, 200, { results: await readAppMigrationHistory() });
   if (req.method === 'POST' && pathname === '/api/apps/scan') return json(res, 200, await installedApps(true));
   if (req.method === 'POST' && pathname === '/api/apps/move') {
     const data = await body(req);
-    try { return json(res, 200, await moveApp(data)); }
+    try {
+      const result = await moveApp(data);
+      try { await recordAppMigration(result, data.packageFullName); }
+      catch (error) { result.historyWarning = `结果已返回，但写入本机记录失败：${error.message}`; }
+      return json(res, 200, result);
+    }
     catch (error) { return json(res, 400, { error: error.message }); }
   }
   if (req.method === 'GET' && pathname === '/api/history') return json(res, 200, { history: await readHistory() });
