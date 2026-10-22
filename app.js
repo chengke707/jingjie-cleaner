@@ -42,7 +42,7 @@ document.querySelectorAll('[data-icon]').forEach((node) => {
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
-const state = { live: false, results: [], selected: new Set(), filter: 'all', quarantine: [], history: [], apps: [], leftovers: [], leftoverSelected: new Set(), repairResults: {} };
+const state = { live: false, results: [], selected: new Set(), filter: 'all', quarantine: [], history: [], apps: [], migrationApps: [], targetDrives: [], migrationTargets: {}, migrationResults: {}, appMoveBusy: false, leftovers: [], leftoverSelected: new Set(), repairResults: {} };
 const demoResults = [
   { id: 'demo-temp', name: '过期临时文件', detail: '183 个超过 7 天的文件', path: '%LOCALAPPDATA%\\Temp', risk: 'safe', size: 684392448, category: 'temp' },
   { id: 'demo-crash', name: '应用崩溃转储', detail: '6 个诊断文件', path: '%LOCALAPPDATA%\\CrashDumps', risk: 'safe', size: 128974848, category: 'crash' },
@@ -279,13 +279,60 @@ function demoApps() { return [
   { name: 'WeChat', publisher: 'Tencent Technology', size: 1958739968, used: '今天', status: '可清缓存', color: '#27ae60' },
   { name: '旧版截图工具', publisher: 'Unknown Publisher', size: 126877696, used: '91 天前', status: '建议审查', color: '#d66a4f' }
 ]; }
-async function loadApps() { try { const data = await api('/api/apps'); state.apps = data.apps; } catch { state.apps = []; toast('安装清单读取失败，未替换为演示数据'); } renderApps(); }
+async function loadApps(force = false) { try { const data = await api(force ? '/api/apps/scan' : '/api/apps', force ? { method: 'POST', body: '{}' } : undefined); state.apps = data.apps || []; state.migrationApps = data.migrationApps || []; state.targetDrives = data.targetDrives || []; renderApps(); renderAppMigration(); return true; } catch { toast('安装清单读取失败，未替换为演示数据'); return false; } }
 function renderApps(filter = '') {
   const apps = state.apps.filter((app) => app.name.toLowerCase().includes(filter.toLowerCase()));
   $('#appRows').innerHTML = apps.slice(0, 30).map((app, index) => `<div class="app-row"><span class="app-identity"><span class="app-logo" style="background:${app.color || ['#438a7b','#55799c','#9b7653','#786a9d'][index % 4]}">${escapeHtml(app.name.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(app.name)}</strong><small>${escapeHtml(app.publisher || '发布者未知')}</small></span></span><span>${formatBytes(app.size || 0)}</span><span>${escapeHtml(app.used || '未知')}</span><span class="${app.status === '正常' ? 'risk-safe' : 'risk-review'}">${escapeHtml(app.status || '正常')}</span><span><button class="secondary-btn app-action">详情</button></span></div>`).join('');
   $$('.app-action').forEach((button) => button.addEventListener('click', () => toast('当前仅展示安装信息，不执行卸载或残留清理')));
 }
 $('#appSearch').addEventListener('input', (event) => renderApps(event.target.value));
+
+function renderAppMigration() {
+  const apps = state.migrationApps;
+  const completed = Object.values(state.migrationResults).filter(result => result.status === 'completed').length;
+  $('#migrationSummary').textContent = `${apps.length ? `发现 ${apps.length} 个安装位置在系统盘的应用` : '尚未发现系统盘应用，或还没有扫描'}${completed ? ` · 已迁移 ${completed} 项` : ''}`;
+  $('#migrationRows').innerHTML = apps.length ? apps.map((app, index) => {
+    const moveTargets = app.moveSupported ? state.targetDrives.filter(drive => drive.appxVolumeName) : state.targetDrives;
+    const key = app.packageFullName || app.path;
+    const options = moveTargets.map((drive, driveIndex) => `<option value="${escapeHtml(drive.drive)}" ${state.migrationTargets[key] === drive.drive || (!state.migrationTargets[key] && driveIndex === 0) ? 'selected' : ''}>${escapeHtml(drive.drive)}: ${escapeHtml(drive.label || '本地磁盘')} · 可用 ${formatBytes(drive.free)}</option>`).join('');
+    const moveable = app.moveSupported && moveTargets.length > 0;
+    const result = state.migrationResults[key];
+    return `<div class="migration-row"><div class="migration-app"><strong>${escapeHtml(app.name)}</strong><small title="${escapeHtml(app.path)}">${escapeHtml(app.path)}</small></div><span class="migration-kind">${app.kind === 'store' ? 'Windows 商店应用' : '传统桌面软件'}${app.size ? ` · ${formatBytes(app.size)}` : ''}</span><label class="migration-target">目标盘<select data-migration-target="${index}" ${state.appMoveBusy ? 'disabled' : ''}>${options || '<option value="">没有可用的迁移盘</option>'}</select></label><button class="secondary-btn migration-action" data-migration-app="${index}" ${state.appMoveBusy || !moveTargets.length ? 'disabled' : ''}>${state.appMoveBusy ? '迁移中…' : moveable ? '迁移' : '查看迁移方法'}</button><small class="migration-guidance">${moveable ? 'Windows 支持迁移；会弹出管理员授权。' : '不能直接搬文件夹；请卸载后从官方安装程序重装到目标盘。'}</small>${result ? `<div class="migration-result ${escapeHtml(result.status)}"><strong>${escapeHtml(result.summary)}</strong><span>${escapeHtml(result.detail || '')}</span></div>` : ''}</div>`;
+  }).join('') : '<div class="leftover-placeholder">扫描后会列出 C 盘安装清单中的应用和安装位置。</div>';
+  $('#migrationHistory').innerHTML = Object.values(state.migrationResults).length ? Object.values(state.migrationResults).map(result => `<div class="migration-result ${escapeHtml(result.status)}"><strong>${escapeHtml(result.name)} · ${escapeHtml(result.summary)}</strong><span>${escapeHtml(result.drive ? `目标盘 ${result.drive}: · ` : '')}${escapeHtml(result.detail || '')}</span></div>`).join('') : '';
+  $$('[data-migration-app]').forEach(button => button.addEventListener('click', () => handleAppMigration(Number(button.dataset.migrationApp))));
+  $$('[data-migration-target]').forEach(select => select.addEventListener('change', () => { const app = state.migrationApps[Number(select.dataset.migrationTarget)]; if (app) state.migrationTargets[app.packageFullName || app.path] = select.value; }));
+}
+
+async function handleAppMigration(index) {
+  const app = state.migrationApps[index];
+  const select = $(`[data-migration-target="${index}"]`);
+  const target = state.targetDrives.find(drive => drive.drive === select?.value);
+  if (!app || !target) return toast('请选择一个可用的目标磁盘');
+  if (!app.moveSupported || !target.appxVolumeName) {
+    const result = { name: app.name, drive: target.drive, status: 'guidance', summary: '请使用官方安装程序重装', detail: `Windows 不支持安全一键迁移。已选择 ${target.drive}:；请先在 Windows 应用设置中卸载，再从软件厂商官网下载并安装到该盘。` };
+    state.migrationResults[app.packageFullName || app.path] = result; renderAppMigration();
+    toast(result.detail);
+    try { await api('/api/repair/action', { method: 'POST', body: JSON.stringify({ action: 'open-app-settings', confirm: true }) }); }
+    catch (error) { toast(`已选择 ${target.drive}:，但无法打开 Windows 应用设置：${error.message}`); }
+    return;
+  }
+  if (!window.confirm(`将「${app.name}」从 C: 迁移到 ${target.drive}:？\n\nWindows 将使用系统应用迁移功能，可能关闭该应用并弹出管理员授权。应用设置和个人数据是否一起迁移由 Windows 决定。迁移后请打开应用测试；本操作不删除应用数据。`)) return;
+  state.appMoveBusy = true; renderAppMigration();
+  try {
+    const result = await api('/api/apps/move', { method: 'POST', body: JSON.stringify({ packageFullName: app.packageFullName, targetVolumeName: target.appxVolumeName, confirm: true }) });
+    state.migrationResults[app.packageFullName] = { name: result.appName || app.name, drive: result.targetDrive || target.drive, status: result.status, summary: result.summary || '迁移结果', detail: result.detail || '' };
+    toast(`${result.summary}：${result.appName || app.name} · ${result.detail}`);
+    if (result.status === 'completed' || result.status === 'review') await loadApps(true);
+  } catch (error) { toast(`没有完成迁移：${error.message}`); }
+  finally { state.appMoveBusy = false; renderAppMigration(); }
+}
+
+$('#scanCDriveApps').addEventListener('click', async (event) => {
+  const button = event.currentTarget; button.disabled = true; button.textContent = '正在扫描…';
+  try { if (await loadApps(true)) toast(`扫描完成：找到 ${state.migrationApps.length} 个系统盘应用`); }
+  finally { button.disabled = false; button.textContent = '重新扫描 C 盘应用'; }
+});
 
 async function scanLeftovers() {
   if (!state.live) return toast('请通过桌面入口启动本机服务后再扫描');

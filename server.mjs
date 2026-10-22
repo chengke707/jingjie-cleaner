@@ -9,12 +9,17 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { createRepairJobs } from './repair-jobs.mjs';
 import { createComponentCheck } from './component-check.mjs';
+import { buildAppMigrationInventory, createAppMover } from './app-migration.mjs';
 
 const execFileAsync = promisify(execFile);
 const appDir = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.JINGJIE_DATA_DIR ? path.resolve(process.env.JINGJIE_DATA_DIR) : appDir;
 const repairJobs = createRepairJobs({ dataDir, appDir });
 const checkComponents = createComponentCheck({ dataDir, appDir });
+let inventoryCache = { at: 0, items: [], disks: [], appxVolumes: [] };
+let appMoveInventoryFlight;
+const freshAppMoveInventory = () => appMoveInventoryFlight ||= softwareInventory(true).finally(() => { appMoveInventoryFlight = null; });
+const moveApp = createAppMover({ appDir, dataDir, inventory: async () => (await freshAppMoveInventory()).items, targets: async () => (await freshAppMoveInventory()).appxVolumes });
 const quarantineDir = path.join(dataDir, '.quarantine');
 const manifestPath = path.join(quarantineDir, 'manifest.json');
 const historyPath = path.join(quarantineDir, 'history.json');
@@ -130,9 +135,8 @@ function directoryMatchesIdentity(directory, inventory) {
   });
 }
 
-let inventoryCache = { at: 0, items: [] };
-async function softwareInventory() {
-  if (Date.now() - inventoryCache.at < 60000) return inventoryCache.items;
+async function softwareInventory(force = false) {
+  if (!force && Date.now() - inventoryCache.at < 60000) return inventoryCache;
   const script = String.raw`
     [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
     $roots = @(
@@ -144,14 +148,19 @@ async function softwareInventory() {
       if (Test-Path $root) { Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object { Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue } }
     }
     $desktop = @($items | Where-Object DisplayName | Select-Object DisplayName, Publisher, EstimatedSize, InstallDate, InstallLocation, @{N='Kind';E={'desktop'}})
-    $store = @(Get-AppxPackage -ErrorAction SilentlyContinue | Select-Object @{N='DisplayName';E={$_.Name}}, Publisher, @{N='EstimatedSize';E={0}}, @{N='InstallDate';E={''}}, InstallLocation, @{N='Kind';E={'store'}}, Name)
-    @($desktop + $store) | ConvertTo-Json -Compress -Depth 3
+    $store = @(Get-AppxPackage -ErrorAction SilentlyContinue | Select-Object @{N='DisplayName';E={$_.Name}}, Publisher, @{N='EstimatedSize';E={0}}, @{N='InstallDate';E={''}}, InstallLocation, @{N='Kind';E={'store'}}, Name, PackageFullName, NonRemovable, IsFramework, IsResourcePackage)
+    $disks = @(Get-Volume -ErrorAction SilentlyContinue | Where-Object DriveLetter | Select-Object DriveLetter, FileSystemLabel, DriveType, SizeRemaining)
+    $appxVolumes = @(Get-AppxVolume -ErrorAction SilentlyContinue | Select-Object Name, PackageStorePath, IsOffline, IsSystemVolume)
+    [pscustomobject]@{Apps=@($desktop + $store); Disks=$disks; AppxVolumes=$appxVolumes} | ConvertTo-Json -Compress -Depth 4
   `;
   try {
     const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, encoding: 'utf8', timeout: 30000, maxBuffer: 24 * 1024 * 1024 });
-    let items = JSON.parse(stdout || '[]'); if (!Array.isArray(items)) items = [items];
-    inventoryCache = { at: Date.now(), items }; return items;
-  } catch { return inventoryCache.items; }
+    const parsed = JSON.parse(stdout || '{}');
+    const items = Array.isArray(parsed.Apps) ? parsed.Apps : parsed.Apps ? [parsed.Apps] : [];
+    const disks = Array.isArray(parsed.Disks) ? parsed.Disks : parsed.Disks ? [parsed.Disks] : [];
+    const appxVolumes = Array.isArray(parsed.AppxVolumes) ? parsed.AppxVolumes : parsed.AppxVolumes ? [parsed.AppxVolumes] : [];
+    inventoryCache = { at: Date.now(), items, disks, appxVolumes }; return inventoryCache;
+  } catch { return inventoryCache; }
 }
 
 async function runningExecutablePaths() {
@@ -177,7 +186,7 @@ async function collectDirectoryFiles(root) {
 }
 
 async function scanLeftovers() {
-  const inventory = await softwareInventory();
+  const inventory = (await softwareInventory()).items;
   if (!inventory.length) throw new Error('无法读取 Windows 安装清单，为避免误判已停止残留扫描');
   const running = await runningExecutablePaths();
   const candidates = []; const cutoff = Date.now() - 30 * 86400000; const seen = new Set();
@@ -293,17 +302,19 @@ async function purge(id) {
   return { freed, remaining: failed, deleted: deletedFiles.length };
 }
 
-async function installedApps() {
-  const raw = await softwareInventory();
-  const all = raw.filter((item) => item.Kind !== 'store').map((item) => ({
+async function installedApps(force = false) {
+  const inventory = await softwareInventory(force);
+  const all = inventory.items.filter((item) => item.Kind !== 'store').map((item) => ({
     name: item.DisplayName,
     publisher: item.Publisher || '发布者未知',
     size: Number(item.EstimatedSize || 0) * 1024,
     used: /^\d{8}$/.test(item.InstallDate || '') ? `${item.InstallDate.slice(0,4)}-${item.InstallDate.slice(4,6)}-${item.InstallDate.slice(6,8)}` : '未知',
+    path: item.InstallLocation || '',
     status: '未评估'
   }));
   const unique = new Map(); all.forEach((app) => { if (!unique.has(app.name)) unique.set(app.name, app); });
-  return [...unique.values()].sort((a, b) => b.size - a.size).slice(0, 100);
+  const migration = buildAppMigrationInventory({ apps: inventory.items, disks: inventory.disks, appxVolumes: inventory.appxVolumes });
+  return { apps: [...unique.values()].sort((a, b) => b.size - a.size).slice(0, 200), migrationApps: migration.apps, targetDrives: migration.targets };
 }
 
 async function repairCheck(id) {
@@ -335,6 +346,7 @@ async function repairCheck(id) {
 }
 
 async function repairAction(action) {
+  if (action === 'open-app-settings') { spawn('explorer.exe', ['ms-settings:appsfeatures'], { detached: true, stdio: 'ignore' }).unref(); return { message: '已打开 Windows 已安装的应用设置' }; }
   if (action === 'open-update') { spawn('explorer.exe', ['ms-settings:windowsupdate'], { detached: true, stdio: 'ignore' }).unref(); return { message: '已打开 Windows 更新' }; }
   if (action === 'open-storage') { spawn('explorer.exe', ['ms-settings:storagesense'], { detached: true, stdio: 'ignore' }).unref(); return { message: '已打开 Windows 存储设置' }; }
   throw new Error('未知修复操作');
@@ -352,9 +364,15 @@ async function handleApi(req, res, pathname) {
   if (req.method === 'GET' && pathname === '/api/system') {
     let disk = { total: 0, free: 0, usedPercent: 0 };
     try { const stats = fs.statfsSync(process.env.SystemDrive || 'C:\\'); disk = { total: stats.blocks * stats.bsize, free: stats.bavail * stats.bsize, usedPercent: Math.round((1 - stats.bavail / stats.blocks) * 100) }; } catch {}
-    const quarantined = (await readManifest()).map(({ files, ...item }) => item); return json(res, 200, { app: 'jingjie-cleaner', version: '0.3.2', disk, hostname: os.hostname(), quarantine: quarantined });
+    const quarantined = (await readManifest()).map(({ files, ...item }) => item); return json(res, 200, { app: 'jingjie-cleaner', version: '0.3.3', disk, hostname: os.hostname(), quarantine: quarantined });
   }
-  if (req.method === 'GET' && pathname === '/api/apps') return json(res, 200, { apps: await installedApps() });
+  if (req.method === 'GET' && pathname === '/api/apps') return json(res, 200, await installedApps());
+  if (req.method === 'POST' && pathname === '/api/apps/scan') return json(res, 200, await installedApps(true));
+  if (req.method === 'POST' && pathname === '/api/apps/move') {
+    const data = await body(req);
+    try { return json(res, 200, await moveApp(data)); }
+    catch (error) { return json(res, 400, { error: error.message }); }
+  }
   if (req.method === 'GET' && pathname === '/api/history') return json(res, 200, { history: await readHistory() });
   if (req.method === 'POST' && pathname === '/api/leftovers') return json(res, 200, { leftovers: await scanLeftovers() });
   if (req.method === 'POST' && pathname === '/api/repair/check') { const data = await body(req); return json(res, 200, await repairCheck(data.id)); }

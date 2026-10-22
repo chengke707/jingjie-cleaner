@@ -2,6 +2,7 @@
 .quarantine/
 .repairs/
 .checks/
+.migrations/
 .service-pid
 work/
 node_modules/
